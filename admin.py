@@ -211,9 +211,18 @@ with tab2:
                             tmp_file.write(uploaded_file.getbuffer())
                             temp_path = tmp_file.name
                         
+                        # 處理檔案名稱長度限制 (40 字元)
+                        original_name = uploaded_file.name
+                        display_name = original_name
+                        if len(display_name) > 40:
+                            name_part, ext = os.path.splitext(display_name)
+                            max_name_len = 40 - len(ext)
+                            display_name = name_part[:max_name_len] + ext
+                            st.warning(f"⚠️ 檔名過長,已自動截短: {original_name} → {display_name}")
+                        
                         if upload_method == "直接上傳":
                             # 準備設定
-                            config = {'display_name': uploaded_file.name}
+                            config = {'display_name': display_name}
                             
                             if use_custom_chunking:
                                 config['chunking_config'] = {
@@ -236,7 +245,7 @@ with tab2:
                             # 先上傳到 Files API
                             sample_file = client.files.upload(
                                 file=temp_path,
-                                config={'name': uploaded_file.name}
+                                config={'display_name': display_name}
                             )
                             
                             # 準備匯入設定
