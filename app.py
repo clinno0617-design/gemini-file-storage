@@ -67,6 +67,41 @@ with st.sidebar:
     
     st.divider()
     
+    # 系統提示詞設定
+    st.subheader("📝 系統提示詞")
+    
+    # 預設的法規查詢系統提示詞
+    default_system_prompt = """你是一個專業的法規查詢助手。請遵循以下規則回答問題:
+
+1. **直接列出相關法規條文**: 完整引用條文內容,不要省略
+2. **不要解釋說明**: 只提供法條原文,不需要額外解釋或評論
+3. **明確標註出處**: 每條法規必須標註法規名稱、條號和項次
+
+回答格式範例:
+【勞動基準法第30條】
+勞工正常工作時間,每日不得超過八小時,每週不得超過四十小時。
+
+【勞動基準法第32條第1項】
+雇主有使勞工在正常工作時間以外工作之必要者,雇主經工會同意,如事業單位無工會者,經勞資會議同意後,得將工作時間延長之。
+
+請嚴格遵循以上格式,確保引用準確。"""
+    
+    use_custom_prompt = st.checkbox("自訂系統提示詞", value=False)
+    
+    if use_custom_prompt:
+        system_prompt = st.text_area(
+            "系統提示詞",
+            value=default_system_prompt,
+            height=300,
+            help="定義 AI 助手的行為和回答風格"
+        )
+    else:
+        system_prompt = default_system_prompt
+        with st.expander("查看預設提示詞"):
+            st.code(default_system_prompt, language="text")
+    
+    st.divider()
+    
     # 搜尋設定
     st.subheader("🔍 搜尋設定")
     
@@ -103,8 +138,12 @@ st.markdown("---")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
+# 初始化 chunks 記錄
+if "chunks_history" not in st.session_state:
+    st.session_state.chunks_history = []
+
 # 顯示對話歷史
-for message in st.session_state.messages:
+for idx, message in enumerate(st.session_state.messages):
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         
@@ -117,6 +156,25 @@ for message in st.session_state.messages:
                     if citation.get('chunk_id'):
                         st.markdown(f"- 區塊: `{citation['chunk_id']}`")
                     st.markdown("---")
+        
+        # 顯示檢索到的 chunks
+        if message["role"] == "assistant" and idx < len(st.session_state.chunks_history):
+            chunks_data = st.session_state.chunks_history[idx]
+            if chunks_data:
+                with st.expander(f"🔍 查看檢索內容 ({len(chunks_data)} 個區塊)", expanded=False):
+                    for i, chunk in enumerate(chunks_data, 1):
+                        st.markdown(f"### 📄 區塊 {i}")
+                        st.markdown(f"**來源:** {chunk.get('source', 'Unknown')}")
+                        st.markdown("**內容:**")
+                        st.text_area(
+                            f"chunk_{idx}_{i}",
+                            value=chunk.get('text', ''),
+                            height=150,
+                            disabled=True,
+                            label_visibility="collapsed"
+                        )
+                        if i < len(chunks_data):
+                            st.markdown("---")
 
 # 查詢輸入
 if selected_store:
@@ -140,10 +198,26 @@ if selected_store:
                     if use_metadata_filter and metadata_filter:
                         file_search_config.metadata_filter = metadata_filter
                     
+                    # 準備訊息內容 (加入系統提示詞)
+                    contents = [
+                        types.Content(
+                            role="user",
+                            parts=[types.Part(text=system_prompt)]
+                        ),
+                        types.Content(
+                            role="model",
+                            parts=[types.Part(text="我了解。我會嚴格遵循您的指示:只列出法規條文原文,不做解釋,並明確標註出處。")]
+                        ),
+                        types.Content(
+                            role="user",
+                            parts=[types.Part(text=query)]
+                        )
+                    ]
+                    
                     # 呼叫 Gemini API
                     response = client.models.generate_content(
                         model=model_choice,
-                        contents=query,
+                        contents=contents,
                         config=types.GenerateContentConfig(
                             tools=[
                                 types.Tool(file_search=file_search_config)
@@ -157,15 +231,45 @@ if selected_store:
                     
                     # 處理引用資訊
                     citations = []
+                    chunks_data = []
+                    
                     if hasattr(response.candidates[0], 'grounding_metadata'):
                         grounding = response.candidates[0].grounding_metadata
+                        
+                        # 提取引用
                         if grounding and hasattr(grounding, 'grounding_chunks'):
                             for chunk in grounding.grounding_chunks:
+                                # 提取引用資訊
                                 if hasattr(chunk, 'web') and chunk.web:
                                     citations.append({
                                         'document': chunk.web.uri if hasattr(chunk.web, 'uri') else 'Unknown',
                                         'chunk_id': chunk.web.title if hasattr(chunk.web, 'title') else ''
                                     })
+                                
+                                # 提取 chunk 內容
+                                chunk_info = {}
+                                if hasattr(chunk, 'web') and chunk.web:
+                                    chunk_info['source'] = chunk.web.uri if hasattr(chunk.web, 'uri') else 'Unknown'
+                                    chunk_info['text'] = chunk.web.title if hasattr(chunk.web, 'title') else ''
+                                
+                                # 嘗試獲取實際文本內容
+                                if hasattr(chunk, 'retrieved_context'):
+                                    chunk_info['text'] = chunk.retrieved_context.text if hasattr(chunk.retrieved_context, 'text') else str(chunk.retrieved_context)
+                                elif hasattr(chunk, 'text'):
+                                    chunk_info['text'] = chunk.text
+                                
+                                if chunk_info:
+                                    chunks_data.append(chunk_info)
+                        
+                        # 如果有 grounding_supports,也嘗試提取
+                        if grounding and hasattr(grounding, 'grounding_supports'):
+                            for support in grounding.grounding_supports:
+                                if hasattr(support, 'segment'):
+                                    chunk_info = {
+                                        'source': 'Grounding Support',
+                                        'text': support.segment.text if hasattr(support.segment, 'text') else str(support.segment)
+                                    }
+                                    chunks_data.append(chunk_info)
                     
                     # 顯示引用
                     if citations:
@@ -177,12 +281,37 @@ if selected_store:
                                     st.markdown(f"- 區塊: `{citation['chunk_id']}`")
                                 st.markdown("---")
                     
+                    # 顯示檢索到的 chunks
+                    if chunks_data:
+                        with st.expander(f"🔍 查看檢索內容 ({len(chunks_data)} 個區塊)", expanded=False):
+                            for i, chunk in enumerate(chunks_data, 1):
+                                st.markdown(f"### 📄 區塊 {i}")
+                                st.markdown(f"**來源:** {chunk.get('source', 'Unknown')}")
+                                st.markdown("**內容:**")
+                                st.text_area(
+                                    f"chunk_new_{i}",
+                                    value=chunk.get('text', ''),
+                                    height=150,
+                                    disabled=True,
+                                    label_visibility="collapsed"
+                                )
+                                if i < len(chunks_data):
+                                    st.markdown("---")
+                    
                     # 儲存到對話歷史
                     st.session_state.messages.append({
                         "role": "assistant",
                         "content": answer,
                         "citations": citations
                     })
+                    
+                    # 儲存 chunks 到歷史
+                    # 需要為每個 assistant 訊息儲存對應的 chunks
+                    # 計算當前是第幾個 assistant 訊息
+                    assistant_msg_count = sum(1 for m in st.session_state.messages if m["role"] == "assistant")
+                    while len(st.session_state.chunks_history) < assistant_msg_count:
+                        st.session_state.chunks_history.append(None)
+                    st.session_state.chunks_history[-1] = chunks_data
                     
                 except Exception as e:
                     error_msg = f"❌ 查詢失敗: {str(e)}"
@@ -191,15 +320,37 @@ if selected_store:
                         "role": "assistant",
                         "content": error_msg
                     })
+                    st.session_state.chunks_history.append(None)
 
 else:
     st.info("👈 請先在側邊欄選擇知識庫")
 
 # 清除對話按鈕
 if st.session_state.messages:
-    if st.button("🗑️ 清除對話歷史"):
-        st.session_state.messages = []
-        st.rerun()
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        if st.button("🗑️ 清除對話歷史", use_container_width=True):
+            st.session_state.messages = []
+            st.session_state.chunks_history = []
+            st.rerun()
+    with col2:
+        if st.button("💾 匯出對話記錄", use_container_width=True):
+            import json
+            from datetime import datetime
+            
+            export_data = {
+                "exported_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "knowledge_base": selected_display if selected_store else "None",
+                "conversation": st.session_state.messages
+            }
+            
+            json_str = json.dumps(export_data, ensure_ascii=False, indent=2)
+            st.download_button(
+                label="📥 下載 JSON",
+                data=json_str,
+                file_name=f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                mime="application/json"
+            )
 
 # 頁尾
 st.markdown("---")

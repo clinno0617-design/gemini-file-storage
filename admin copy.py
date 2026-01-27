@@ -5,9 +5,6 @@ import time
 import os
 import tempfile
 from pathlib import Path
-import hashlib
-import json
-from datetime import datetime
 
 # 頁面配置
 st.set_page_config(
@@ -32,73 +29,12 @@ except Exception as e:
     st.info("請確認已正確設定 GEMINI_API_KEY 環境變數")
     st.stop()
 
-# 檔案註冊表管理
-REGISTRY_FILE = "file_registry.json"
-
-def load_registry():
-    """載入檔案註冊表"""
-    if os.path.exists(REGISTRY_FILE):
-        try:
-            with open(REGISTRY_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
-
-def save_registry(registry):
-    """儲存檔案註冊表"""
-    with open(REGISTRY_FILE, 'w', encoding='utf-8') as f:
-        json.dump(registry, f, ensure_ascii=False, indent=2)
-
-def calculate_file_hash(file_content):
-    """計算檔案 hash"""
-    return hashlib.md5(file_content).hexdigest()
-
-def check_file_status(file_name, file_hash, store_name):
-    """檢查檔案狀態
-    Returns: ('new'|'unchanged'|'updated', old_info)
-    """
-    registry = load_registry()
-    key = f"{store_name}:{file_name}"
-    
-    if key not in registry:
-        return 'new', None
-    
-    old_info = registry[key]
-    if old_info.get('hash') == file_hash:
-        return 'unchanged', old_info
-    else:
-        return 'updated', old_info
-
-def register_file(file_name, file_hash, store_name, file_id=None):
-    """註冊檔案資訊"""
-    registry = load_registry()
-    key = f"{store_name}:{file_name}"
-    
-    registry[key] = {
-        'file_name': file_name,
-        'file_hash': file_hash,
-        'store_name': store_name,
-        'file_id': file_id,
-        'uploaded_at': datetime.now().isoformat(),
-        'version': registry.get(key, {}).get('version', 0) + 1
-    }
-    
-    save_registry(registry)
-    return registry[key]
-
 st.title("🗄️ 檔案搜尋商店管理系統")
 st.markdown("管理您的知識庫和法規文件")
-
-# 顯示版本控制狀態
-registry = load_registry()
-if registry:
-    st.info(f"📊 已追蹤 {len(registry)} 個檔案版本")
-
 st.markdown("---")
 
 # 標籤頁
-tab1, tab2, tab3, tab4 = st.tabs(["📁 商店管理", "⬆️ 上傳檔案", "📊 統計資訊", "🔄 版本控制"])
+tab1, tab2, tab3 = st.tabs(["📁 商店管理", "⬆️ 上傳檔案", "📊 統計資訊"])
 
 # ===== 標籤頁 1: 商店管理 =====
 with tab1:
@@ -244,10 +180,9 @@ with tab2:
                 metadata_items = []
                 if use_metadata:
                     st.markdown("**中繼資料設定**")
-                    author = st.text_input("部門", key="meta_department")
-                    year = st.number_input("年份", min_value=1900, max_value=2100, value=2026, key="meta_year")
+                    author = st.text_input("作者", key="meta_author")
+                    year = st.number_input("年份", min_value=1900, max_value=2100, value=2024, key="meta_year")
                     category = st.text_input("分類", key="meta_category")
-                    document_version = st.text_input("文件版本", key="meta_document_version")
                     
                     if author:
                         metadata_items.append({"key": "author", "string_value": author})
@@ -255,8 +190,6 @@ with tab2:
                         metadata_items.append({"key": "year", "numeric_value": year})
                     if category:
                         metadata_items.append({"key": "category", "string_value": category})
-                    if document_version:
-                        metadata_items.append({"key": "document_version", "string_value": document_version})
         
         # 上傳按鈕
         if st.button("🚀 開始上傳", type="primary", use_container_width=True):
@@ -268,24 +201,15 @@ with tab2:
                 
                 total_files = len(uploaded_files)
                 success_count = 0
-                skipped_count = 0
-                updated_count = 0
                 
                 for idx, uploaded_file in enumerate(uploaded_files):
                     status_text.text(f"正在處理: {uploaded_file.name} ({idx+1}/{total_files})")
                     
                     try:
                         # 建立臨時檔案 (跨平台相容)
-                        file_content = uploaded_file.getbuffer()
                         with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
-                            tmp_file.write(file_content)
+                            tmp_file.write(uploaded_file.getbuffer())
                             temp_path = tmp_file.name
-                        
-                        # 計算檔案 hash
-                        file_hash = calculate_file_hash(file_content)
-                        
-                        # 檢查檔案狀態
-                        file_status, old_info = check_file_status(uploaded_file.name, file_hash, selected_store)
                         
                         # 處理檔案名稱長度限制 (40 字元)
                         original_name = uploaded_file.name
@@ -295,20 +219,6 @@ with tab2:
                             max_name_len = 40 - len(ext)
                             display_name = name_part[:max_name_len] + ext
                             st.warning(f"⚠️ 檔名過長,已自動截短: {original_name} → {display_name}")
-                        
-                        # 根據狀態處理
-                        if file_status == 'unchanged':
-                            st.info(f"⏭️ {uploaded_file.name} 未變更,跳過上傳 (版本 {old_info.get('version', 1)})")
-                            skipped_count += 1
-                            progress_bar.progress((idx + 1) / total_files)
-                            continue
-                        
-                        elif file_status == 'updated':
-                            st.warning(f"🔄 {uploaded_file.name} 已更新,將上傳新版本 (v{old_info.get('version', 1)} → v{old_info.get('version', 1) + 1})")
-                            updated_count += 1
-                        
-                        else:  # new
-                            st.info(f"✨ {uploaded_file.name} 是新檔案,開始上傳...")
                         
                         if upload_method == "直接上傳":
                             # 準備設定
@@ -355,14 +265,6 @@ with tab2:
                             time.sleep(2)
                             operation = client.operations.get(operation)
                         
-                        # 註冊檔案到版本控制系統
-                        file_info = register_file(
-                            uploaded_file.name,
-                            file_hash,
-                            selected_store,
-                            file_id=getattr(operation, 'name', None)
-                        )
-                        
                         # 清理臨時檔案
                         try:
                             os.unlink(temp_path)
@@ -370,7 +272,7 @@ with tab2:
                             pass
                         
                         success_count += 1
-                        st.success(f"✅ {uploaded_file.name} 上傳成功 (版本 {file_info['version']})")
+                        st.success(f"✅ {uploaded_file.name} 上傳成功")
                         
                     except Exception as e:
                         st.error(f"❌ {uploaded_file.name} 上傳失敗: {str(e)}")
@@ -383,21 +285,8 @@ with tab2:
                     
                     progress_bar.progress((idx + 1) / total_files)
                 
-                # 顯示統計
-                st.markdown("---")
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("✅ 成功", success_count)
-                with col2:
-                    st.metric("🔄 更新", updated_count)
-                with col3:
-                    st.metric("⏭️ 跳過", skipped_count)
-                with col4:
-                    st.metric("❌ 失敗", total_files - success_count - skipped_count)
-                
-                status_text.text(f"完成! 成功 {success_count}、更新 {updated_count}、跳過 {skipped_count} / 總共 {total_files} 個檔案")
-                if success_count > 0:
-                    st.balloons()
+                status_text.text(f"完成! 成功上傳 {success_count}/{total_files} 個檔案")
+                st.balloons()
 
 # ===== 標籤頁 3: 統計資訊 =====
 with tab3:
@@ -466,141 +355,6 @@ with tab3:
         - **查詢嵌入**: 免費
         """)
 
-# ===== 標籤頁 4: 版本控制 =====
-with tab4:
-    st.header("🔄 版本控制管理")
-    
-    registry = load_registry()
-    
-    if not registry:
-        st.info("目前沒有追蹤任何檔案版本")
-        st.markdown("""
-        ### 💡 版本控制功能
-        
-        當您上傳檔案時,系統會自動:
-        - ✅ 計算檔案 hash 指紋
-        - ✅ 偵測檔案是否變更
-        - ✅ 跳過未變更的檔案 (節省成本)
-        - ✅ 提示更新的檔案
-        - ✅ 追蹤版本歷史
-        """)
-    else:
-        # 統計資訊
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("追蹤檔案數", len(registry))
-        with col2:
-            stores_count = len(set(v['store_name'] for v in registry.values()))
-            st.metric("涉及商店數", stores_count)
-        with col3:
-            total_versions = sum(v.get('version', 1) for v in registry.values())
-            st.metric("總版本數", total_versions)
-        
-        st.divider()
-        
-        # 依商店分組顯示
-        st.subheader("📦 檔案清單 (依商店分組)")
-        
-        # 按商店分組
-        stores_dict = {}
-        for key, info in registry.items():
-            store = info['store_name']
-            if store not in stores_dict:
-                stores_dict[store] = []
-            stores_dict[store].append((key, info))
-        
-        # 顯示每個商店
-        for store_name, files in stores_dict.items():
-            with st.expander(f"📦 {store_name} ({len(files)} 個檔案)", expanded=True):
-                for key, info in files:
-                    col1, col2, col3 = st.columns([3, 2, 1])
-                    
-                    with col1:
-                        st.markdown(f"**📄 {info['file_name']}**")
-                        st.caption(f"Hash: `{info['file_hash'][:16]}...`")
-                    
-                    with col2:
-                        st.text(f"版本: v{info.get('version', 1)}")
-                        uploaded_time = datetime.fromisoformat(info['uploaded_at'])
-                        st.caption(f"上傳: {uploaded_time.strftime('%Y-%m-%d %H:%M')}")
-                    
-                    with col3:
-                        if st.button("🗑️", key=f"del_reg_{key}"):
-                            # 從註冊表中移除
-                            del registry[key]
-                            save_registry(registry)
-                            st.success("已移除追蹤")
-                            time.sleep(1)
-                            st.rerun()
-                    
-                    st.divider()
-        
-        st.markdown("---")
-        
-        # 管理功能
-        st.subheader("🛠️ 管理功能")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("📥 匯出版本記錄", use_container_width=True):
-                json_str = json.dumps(registry, ensure_ascii=False, indent=2)
-                st.download_button(
-                    label="💾 下載 JSON",
-                    data=json_str,
-                    file_name=f"file_registry_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-        
-        with col2:
-            if st.button("🗑️ 清空版本記錄", type="secondary", use_container_width=True):
-                if st.session_state.get('confirm_clear_registry'):
-                    # 執行清空
-                    save_registry({})
-                    st.success("版本記錄已清空")
-                    st.session_state['confirm_clear_registry'] = False
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    # 需要確認
-                    st.session_state['confirm_clear_registry'] = True
-                    st.warning("⚠️ 再次點擊以確認清空 (此操作不會刪除實際檔案)")
-        
-        # 重置確認狀態
-        if st.button("取消", key="cancel_clear"):
-            st.session_state['confirm_clear_registry'] = False
-            st.rerun()
-        
-        st.divider()
-        
-        # 說明文件
-        with st.expander("📖 版本控制說明"):
-            st.markdown("""
-            ### 🔍 工作原理
-            
-            1. **檔案指紋**: 使用 MD5 hash 計算檔案內容的唯一指紋
-            2. **變更偵測**: 比對新舊 hash,判斷檔案是否變更
-            3. **智慧上傳**: 
-               - 未變更 → 跳過 (節省成本)
-               - 已變更 → 上傳新版本
-               - 新檔案 → 直接上傳
-            
-            ### ⚠️ 重要提醒
-            
-            - **此記錄儲存在本地** (`file_registry.json`)
-            - **不會自動刪除舊版本**: 重複上傳會在 FileSearchStore 中建立多個副本
-            - **建議定期清理**: 使用商店管理功能刪除整個商店後重建
-            
-            ### 💡 最佳實踐
-            
-            1. **定期檢查版本記錄**: 確保沒有重複檔案
-            2. **檔案更新流程**:
-               - 方案 A: 刪除舊商店 → 重新上傳所有檔案
-               - 方案 B: 使用中繼資料標記版本,查詢時篩選最新版
-            3. **備份版本記錄**: 定期匯出 JSON 檔案
-            """)
-
 # 頁尾
 st.markdown("---")
-st.caption("💡 提示: 版本控制功能可避免重複上傳,節省索引成本")
+st.caption("💡 提示: 上傳的檔案會永久保存在 FileSearchStore 中,除非手動刪除商店")
