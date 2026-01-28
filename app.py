@@ -322,7 +322,7 @@ with st.sidebar:
         st.rerun()
 
 # 主要內容區
-st.title("📚 企業法規查詢系統")
+st.title("📚 企業規章查詢系統")
 
 # 顯示當前會話資訊
 if st.session_state.current_session_id:
